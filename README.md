@@ -1,4 +1,6 @@
-# `keri_resolver`
+# Overview
+
+`dkms-resolver` provides a discovery mechanism for DKMS Identifiers (AID's), where other participants are able to discover Identifiers KEL's. It is based upon Kademlia DHT concept with the aim to be the ambient discovery infrastructure. 
 
 ## Options
 
