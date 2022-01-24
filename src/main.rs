@@ -8,16 +8,16 @@ use structopt::StructOpt;
 #[derive(Debug, StructOpt)]
 struct Opts {
     /// API listen port.
-    #[structopt(long, default_value = "9599")]
+    #[structopt(long, env, default_value = "9599")]
     api_port: u16,
 
     /// DHT listen port.
-    #[structopt(long, default_value = "9145")]
+    #[structopt(long, env, default_value = "9145")]
     dht_port: u16,
 
     /// DHT bootstrap IP address.
-    #[structopt(long)]
-    bootstrap_addr: Option<SocketAddr>,
+    #[structopt(long, env)]
+    bootstrap_addr: Option<String>,
 }
 
 #[derive(Debug, Default)]
