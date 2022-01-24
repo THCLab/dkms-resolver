@@ -2,6 +2,8 @@
 
 `dkms-resolver` provides a discovery mechanism for DKMS Identifiers (AID's), where other participants are able to discover Identifiers KEL's. It is based upon Kademlia DHT concept with the aim to be the ambient discovery infrastructure. 
 
+# Usage
+
 ## Options
 
 - `--api-port <api-port>` - API listen port [default: 9599]
