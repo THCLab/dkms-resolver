@@ -18,18 +18,22 @@ struct Opts {
     #[structopt(long, env, default_value = "9599")]
     api_port: u16,
 
+    /// API public host name. Announced in DHT together with API port.
+    #[structopt(long, env, default_value = "localhost")]
+    api_public_host: String,
+
     /// DHT listen port.
     #[structopt(long, env, default_value = "9145")]
     dht_port: u16,
 
     /// DHT bootstrap IP address.
     #[structopt(long, env)]
-    bootstrap_addr: Option<String>,
+    dht_bootstrap_addr: Option<String>,
 }
 
 struct AppState {
     dht_node: Mutex<Node>,
-    pub_api_addr: SocketAddr,
+    api_public_addr: SocketAddr,
     key_states: Mutex<HashMap<String, Value>>,
     witness_ips: Mutex<HashMap<String, WitnessIp>>,
 }
@@ -87,7 +91,7 @@ async fn key_state_put(
         let mut node = data.dht_node.lock().unwrap();
         node.insert(
             get_dht_key(issuer_id.as_bytes()),
-            &data.pub_api_addr.to_string(),
+            &data.api_public_addr.to_string(),
         );
     };
     resp
@@ -141,7 +145,7 @@ async fn witness_ip_put(
         let mut node = data.dht_node.lock().unwrap();
         node.insert(
             get_dht_key(witness_id.as_bytes()),
-            &data.pub_api_addr.to_string(),
+            &data.api_public_addr.to_string(),
         );
     };
     resp
@@ -161,23 +165,21 @@ async fn main() -> std::io::Result<()> {
 
     let Opts {
         api_port,
+        api_public_host,
         dht_port,
-        bootstrap_addr,
+        dht_bootstrap_addr,
     } = Opts::from_args();
 
-    let pub_ip = match public_ip::addr().await {
-        Some(addr) => addr,
-        None => {
-            panic!("Can't resolve public IP")
-        }
-    };
-    let pub_api_addr = SocketAddr::from((pub_ip, api_port));
-    log::info!("Resolved public API address as {:?}", pub_api_addr);
+    let api_public_addr = ToSocketAddrs::to_socket_addrs(&(api_public_host, api_port))
+        .expect("Invalid public API address")
+        .next()
+        .unwrap();
+    log::info!("Public API address is {:?}", api_public_addr);
 
     let dht_addr = SocketAddr::from(([0, 0, 0, 0], dht_port));
     log::info!("Starting DHT peer at {:?}", dht_addr);
 
-    let bootstrap_addr = bootstrap_addr.and_then(|addr| {
+    let dht_bootstrap_addr = dht_bootstrap_addr.and_then(|addr| {
         let addrs = ToSocketAddrs::to_socket_addrs(&addr).expect("Invalid bootstrap address");
         let addr = addrs.into_iter().next()?;
         log::info!("Bootstrapping DHT from {:?}", addr);
@@ -187,7 +189,7 @@ async fn main() -> std::io::Result<()> {
     let dht_node = Node::new(
         &dht_addr.ip().to_string(),
         &dht_addr.port().to_string(),
-        bootstrap_addr.map(|addr| NodeData {
+        dht_bootstrap_addr.map(|addr| NodeData {
             addr: addr.to_string(),
             id: Key::new(random()),
         }),
@@ -195,13 +197,14 @@ async fn main() -> std::io::Result<()> {
 
     let state = web::Data::new(AppState {
         dht_node: Mutex::new(dht_node),
-        pub_api_addr,
+        api_public_addr,
         key_states: Mutex::new(HashMap::new()),
         witness_ips: Mutex::new(HashMap::new()),
     });
 
     let api_addr = SocketAddr::from(([0, 0, 0, 0], api_port));
     log::info!("Starting API server at {:?}", api_addr);
+
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
