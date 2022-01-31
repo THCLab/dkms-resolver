@@ -1,11 +1,16 @@
 use std::{
     collections::HashMap,
     net::{SocketAddr, ToSocketAddrs},
-    sync::Mutex,
+    path::PathBuf,
+    sync::{Arc, Mutex},
 };
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use kademlia_dht::{Key, Node, NodeData};
+use keri::{
+    database::sled::SledEventDatabase, event_message::signed_event_message::Message,
+    event_parsing::message::signed_message, processor::EventProcessor, state::IdentifierState,
+};
 use rand::random;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,6 +27,10 @@ struct Opts {
     #[structopt(long, env, default_value = "localhost")]
     api_public_host: String,
 
+    /// KERI database path.
+    #[structopt(long, env, default_value = "db")]
+    db_path: PathBuf,
+
     /// DHT listen port.
     #[structopt(long, env, default_value = "9145")]
     dht_port: u16,
@@ -34,7 +43,8 @@ struct Opts {
 struct AppState {
     dht_node: Mutex<Node>,
     api_public_addr: SocketAddr,
-    key_states: Mutex<HashMap<String, Value>>,
+    event_processor: Mutex<EventProcessor>,
+    key_states: Mutex<HashMap<String, IdentifierState>>,
     witness_ips: Mutex<HashMap<String, WitnessIp>>,
 }
 
@@ -57,10 +67,12 @@ async fn key_state_get(path: web::Path<String>, data: web::Data<AppState>) -> im
                 .get(&get_dht_key(issuer_id.as_bytes()))
             {
                 let url = format!("http://{}/key_states/{}", addr, issuer_id);
-                let resp = reqwest::get(url).await.unwrap();
-                let body = resp.text().await.unwrap();
-                let key_state: Value = serde_json::from_str(&body).unwrap();
-                return HttpResponse::Ok().json(key_state);
+                log::info!("Found key state for {:?} at {:?}", issuer_id, url);
+                if let Ok(resp) = reqwest::get(url).await {
+                    let body = resp.text().await.unwrap();
+                    let key_state: Value = serde_json::from_str(&body).unwrap();
+                    return HttpResponse::Ok().json(key_state);
+                }
             };
         }
     }
@@ -70,11 +82,32 @@ async fn key_state_get(path: web::Path<String>, data: web::Data<AppState>) -> im
 #[actix_web::put("/key_states/{issuer_id}")]
 async fn key_state_put(
     path: web::Path<String>,
-    body: web::Json<Value>,
+    body: web::Bytes,
     data: web::Data<AppState>,
 ) -> impl Responder {
     let issuer_id = &*path;
-    let key_state = &*body;
+    let key_state = match signed_message(&body) {
+        Ok((_, key_state)) => key_state,
+        Err(err) => {
+            return HttpResponse::BadRequest().body(format!(
+                "Invalid key state event: {:?}",
+                err.map(|err| err.1)
+            ))
+        }
+    };
+    let key_state = match Message::try_from(key_state) {
+        Ok(key_state) => key_state,
+        Err(err) => {
+            return HttpResponse::BadRequest().body(format!("Invalid key state message: {:?}", err))
+        }
+    };
+    let key_state = match data.event_processor.lock().unwrap().process(key_state) {
+        Ok(Some(key_state)) => key_state,
+        Ok(None) => return HttpResponse::BadRequest().body("Empty key state"),
+        Err(err) => {
+            return HttpResponse::BadRequest().body(format!("Can't verify key state: {:?}", err))
+        }
+    };
     let resp = {
         let mut key_states = data.key_states.lock().unwrap();
         log::info!(
@@ -111,10 +144,12 @@ async fn witness_ip_get(path: web::Path<String>, data: web::Data<AppState>) -> i
                 .get(&get_dht_key(witness_id.as_bytes()))
             {
                 let url = format!("http://{}/witness_ips/{}", addr, witness_id);
-                let resp = reqwest::get(url).await.unwrap();
-                let body = resp.text().await.unwrap();
-                let witness_ip: WitnessIp = serde_json::from_str(&body).unwrap();
-                return HttpResponse::Ok().json(witness_ip);
+                log::info!("Found witness IP for {:?} at {:?}", witness_id, url);
+                if let Ok(resp) = reqwest::get(url).await {
+                    let body = resp.text().await.unwrap();
+                    let witness_ip: WitnessIp = serde_json::from_str(&body).unwrap();
+                    return HttpResponse::Ok().json(witness_ip);
+                };
             };
         }
     }
@@ -166,6 +201,7 @@ async fn main() -> std::io::Result<()> {
     let Opts {
         api_port,
         api_public_host,
+        db_path,
         dht_port,
         dht_bootstrap_addr,
     } = Opts::from_args();
@@ -195,9 +231,13 @@ async fn main() -> std::io::Result<()> {
         }),
     );
 
+    let db = Arc::new(SledEventDatabase::new(db_path.as_path()).unwrap());
+    let event_processor = Mutex::new(EventProcessor::new(Arc::clone(&db)));
+
     let state = web::Data::new(AppState {
         dht_node: Mutex::new(dht_node),
         api_public_addr,
+        event_processor,
         key_states: Mutex::new(HashMap::new()),
         witness_ips: Mutex::new(HashMap::new()),
     });
