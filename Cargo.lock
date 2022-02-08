@@ -1422,6 +1422,7 @@ dependencies = [
  "kademlia-dht",
  "keri",
  "log",
+ "mime",
  "public-ip",
  "rand 0.8.4",
  "reqwest",
