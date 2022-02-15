@@ -123,7 +123,7 @@ async fn key_log_get(path: web::Path<String>, data: web::Data<AppState>) -> impl
     return HttpResponse::NotFound().body(format!("Key state for {:?} not found", issuer_id));
 }
 
-#[actix_web::put("/messages/{issuer_id}")]
+#[actix_web::post("/messages/{issuer_id}")]
 async fn message_put(
     path: web::Path<String>,
     body: web::Bytes,
