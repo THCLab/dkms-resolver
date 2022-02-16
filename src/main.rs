@@ -11,13 +11,13 @@ use kademlia_dht::{Key, Node, NodeData};
 use keri::{
     database::sled::SledEventDatabase,
     event_message::signed_event_message::Message,
-    event_parsing::message::signed_message,
+    event_parsing::message::signed_event_stream,
     prefix::{IdentifierPrefix, Prefix},
     processor::EventProcessor,
 };
 use rand::random;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha3::{Digest, Sha3_256};
 use structopt::StructOpt;
 
@@ -135,8 +135,8 @@ async fn message_put(
             return HttpResponse::BadRequest().body(format!("Invalid issuer ID: {:?}", err))
         }
     };
-    let key_state = match signed_message(&body) {
-        Ok((_, key_state)) => key_state,
+    let events = match signed_event_stream(&body) {
+        Ok((_, events)) => events,
         Err(err) => {
             return HttpResponse::BadRequest().body(format!(
                 "Invalid key state event: {:?}",
@@ -144,24 +144,30 @@ async fn message_put(
             ))
         }
     };
-    let key_state = match Message::try_from(key_state) {
-        Ok(key_state) => key_state,
-        Err(err) => {
-            return HttpResponse::BadRequest().body(format!("Invalid key state message: {:?}", err))
-        }
-    };
-    let key_state = match data.event_processor.lock().unwrap().process(key_state) {
-        Ok(Some(key_state)) => key_state,
-        Ok(None) => return HttpResponse::BadRequest().body("Empty key state"),
-        Err(err) => {
-            return HttpResponse::BadRequest().body(format!("Can't verify key state: {:?}", err))
-        }
-    };
-    log::info!(
-        "Saving {data:?} for issuer {id:?}",
-        id = issuer_id,
-        data = key_state
-    );
+
+    for event in events {
+        let msg = match Message::try_from(event) {
+            Ok(msg) => msg,
+            Err(err) => {
+                return HttpResponse::BadRequest()
+                    .body(format!("Invalid key state message: {:?}", err))
+            }
+        };
+        let state = match data.event_processor.lock().unwrap().process(msg) {
+            Ok(Some(state)) => state,
+            Ok(None) => return HttpResponse::BadRequest().body("Empty key state"),
+            Err(err) => {
+                return HttpResponse::BadRequest()
+                    .body(format!("Can't verify key state: {:?}", err))
+            }
+        };
+        log::info!(
+            "Saving {data:?} for issuer {id:?}",
+            id = issuer_id,
+            data = state
+        );
+    }
+
     {
         let mut node = data.dht_node.lock().unwrap();
         node.insert(
@@ -169,7 +175,8 @@ async fn message_put(
             &data.api_public_addr.to_string(),
         );
     };
-    HttpResponse::Ok().json(key_state)
+
+    HttpResponse::Ok().json(json!({}))
 }
 
 #[actix_web::get("/witness_ips/{witness_id}")]
