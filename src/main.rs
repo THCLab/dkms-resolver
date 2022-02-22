@@ -13,7 +13,7 @@ use keri::{
     event_message::signed_event_message::Message,
     event_parsing::message::signed_event_stream,
     prefix::{IdentifierPrefix, Prefix},
-    processor::EventProcessor,
+    processor::{event_storage::EventStorage, EventProcessor},
 };
 use rand::random;
 use serde::{Deserialize, Serialize};
@@ -47,7 +47,7 @@ struct Opts {
 struct AppState {
     dht_node: Mutex<Node>,
     api_public_addr: SocketAddr,
-    event_processor: Mutex<EventProcessor>,
+    event_processor: Mutex<EventStorage>,
     witness_ips: Mutex<HashMap<String, WitnessIp>>,
 }
 
@@ -65,7 +65,7 @@ async fn key_state_get(path: web::Path<String>, data: web::Data<AppState>) -> im
         }
     };
     let event_proc = data.event_processor.lock().unwrap();
-    match event_proc.compute_state(&issuer_id).unwrap() {
+    match event_proc.get_state(&issuer_id).unwrap() {
         Some(key_state) => return HttpResponse::Ok().json(key_state),
         None => {
             if let Some(addr) = data
@@ -96,7 +96,7 @@ async fn key_log_get(path: web::Path<String>, data: web::Data<AppState>) -> impl
         }
     };
     let event_proc = data.event_processor.lock().unwrap();
-    match event_proc.get_kerl(&issuer_id).unwrap() {
+    match event_proc.get_kel(&issuer_id).unwrap() {
         Some(key_log) => {
             return HttpResponse::Ok()
                 .insert_header(header::ContentType(mime::APPLICATION_OCTET_STREAM))
@@ -144,30 +144,31 @@ async fn message_put(
             ))
         }
     };
-
+    
+    let processor = EventProcessor::new(data.event_processor.lock().unwrap().db.clone());
     for event in events {
         let msg = match Message::try_from(event) {
             Ok(msg) => msg,
             Err(err) => {
                 return HttpResponse::BadRequest()
-                    .body(format!("Invalid key state message: {:?}", err))
+                .body(format!("Invalid key state message: {:?}", err))
             }
         };
-        let state = match data.event_processor.lock().unwrap().process(msg) {
-            Ok(Some(state)) => state,
-            Ok(None) => return HttpResponse::BadRequest().body("Empty key state"),
+        match processor.process(msg) {
+            Ok(success) => {
+                log::info!(
+                    "Saving event {data:?} for issuer {id:?}",
+                    id = issuer_id,
+                    data = success
+                );
+            }
             Err(err) => {
                 return HttpResponse::BadRequest()
-                    .body(format!("Can't verify key state: {:?}", err))
+                .body(format!("Error while processing incoming event: {:?}", err))
             }
         };
-        log::info!(
-            "Saving {data:?} for issuer {id:?}",
-            id = issuer_id,
-            data = state
-        );
     }
-
+    
     {
         let mut node = data.dht_node.lock().unwrap();
         node.insert(
@@ -281,7 +282,7 @@ async fn main() -> std::io::Result<()> {
     );
 
     let db = Arc::new(SledEventDatabase::new(db_path.as_path()).unwrap());
-    let event_processor = Mutex::new(EventProcessor::new(Arc::clone(&db)));
+    let event_processor = Mutex::new(EventStorage::new(Arc::clone(&db)));
 
     let state = web::Data::new(AppState {
         dht_node: Mutex::new(dht_node),
