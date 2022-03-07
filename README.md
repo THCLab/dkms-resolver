@@ -26,43 +26,39 @@ OPTIONS:
 
 ## API
 
-- Get issuer's key state (called by TDA)
+- Get issuer's Key Event State (called by TDA)
 
   ```http
   GET /key_states/{issuer_id} HTTP/1.1
   ```
 
-- Set issuer's key state (called by witness)
+- Get issuer's Key Event Log (called by TDA)
 
   ```http
-  PUT /key_states/{issuer_id} HTTP/1.1
-  Content-Type: text/plain
+  GET /key_logs/{issuer_id} HTTP/1.1
+  ```
 
-  // signed message
+- Create key event (called by witness)
+
+  ```http
+  POST /messages/{issuer_id} HTTP/1.1
+  Content-Type: application/octet-stream
+
+  // Signed event data
   {
-    "v":"KERI10JSON000292_",
-    "t":"rpy",
-    "d":"E_v_Syz2Bhh1WCKx9GBSpU4g9FqqxtSNPI_M2KgMC1yI",
-    "dt":"2021-01-01T00:00:00.000000+00:00",
-    "r":"/ksn/Et78eYkh8A3H9w6Q87EC5OcijiVEJT8KyNtEGdpPVWV8",
-    "a":{
-      "v":"KERI10JSON0001d7_",
-      "i":"Et78eYkh8A3H9w6Q87EC5OcijiVEJT8KyNtEGdpPVWV8",
-      "s":"3",
-      "p":"EYhzp9WCvSNFT2dVryQpVFiTzuWGbFNhVHNKCqAqBI8A",
-      "d":"EsL4LnyvTGBqdYC_Ute3ag4XYbu8PdCj70un885pMYpA",
-      "f":"3",
-      "dt":"2021-01-01T00:00:00.000000+00:00",
-      "et":"rot",
-      "kt":"1",
-      "k":["DrcAz_gmDTuWIHn_mOQDeSK_aJIRiw5IMzPD7igzEDb0"],
-      "n":"E_Y2NMHE0nqrTQLe57VPcM0razmxdxRVbljRCSetdjjI",
-      "bt":"0",
-      "b":[],
-      "c":[],
-      "ee":{"s":"3","d":"EsL4LnyvTGBqdYC_Ute3ag4XYbu8PdCj70un885pMYpA","br":[],"ba":[]}
-    }
-  }-FABEt78eYkh8A3H9w6Q87EC5OcijiVEJT8KyNtEGdpPVWV80AAAAAAAAAAAAAAAAAAAAAAwEsL4LnyvTGBqdYC_Ute3ag4XYbu8PdCj70un885pMYpA-AABAAycUrU33S2856nVTuKNbxmGzDwkR9XYY5cXGnpyz4NZsrvt8AdOxfQfYcRCr_URFU9UrEsLFIFJEPoiUEuTbcCg
+    "v": "KERI10JSON000120_",
+    "t": "icp",
+    "d": "Et78eYkh8A3H9w6Q87EC5OcijiVEJT8KyNtEGdpPVWV8",
+    "i": "Et78eYkh8A3H9w6Q87EC5OcijiVEJT8KyNtEGdpPVWV8",
+    "s": "0",
+    "kt":"1",
+    "k": ["DqI2cOZ06RwGNwCovYUWExmdKU983IasmUKMmZflvWdQ"],
+    "n": "E7FuL3Z_KBgt_QAwuZi1lUFNC69wvyHSxnMFUsKjZHss",
+    "bt": "0",
+    "b": [],
+    "c": [],
+    "a": []
+  }-AABAAJEloPu7b4z8v1455StEJ1b7dMIz-P0tKJ_GBBCxQA8JEg0gm8qbS4TWGiHikLoZ2GtLA58l9dzIa2x_otJhoDA
   ```
 
 - Get witness' IP address (called by TDA)

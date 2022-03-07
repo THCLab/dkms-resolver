@@ -2,18 +2,22 @@ use std::{
     collections::HashMap,
     net::{SocketAddr, ToSocketAddrs},
     path::PathBuf,
+    str::FromStr,
     sync::{Arc, Mutex},
 };
 
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{http::header, web, App, HttpResponse, HttpServer, Responder};
 use kademlia_dht::{Key, Node, NodeData};
 use keri::{
-    database::sled::SledEventDatabase, event_message::signed_event_message::Message,
-    event_parsing::message::signed_message, processor::EventProcessor, state::IdentifierState,
+    database::sled::SledEventDatabase,
+    event_message::signed_event_message::Message,
+    event_parsing::message::signed_event_stream,
+    prefix::{IdentifierPrefix, Prefix},
+    processor::{event_storage::EventStorage, EventProcessor},
 };
 use rand::random;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha3::{Digest, Sha3_256};
 use structopt::StructOpt;
 
@@ -43,8 +47,7 @@ struct Opts {
 struct AppState {
     dht_node: Mutex<Node>,
     api_public_addr: SocketAddr,
-    event_processor: Mutex<EventProcessor>,
-    key_states: Mutex<HashMap<String, IdentifierState>>,
+    event_processor: Mutex<EventStorage>,
     witness_ips: Mutex<HashMap<String, WitnessIp>>,
 }
 
@@ -55,18 +58,23 @@ struct WitnessIp {
 
 #[actix_web::get("/key_states/{issuer_id}")]
 async fn key_state_get(path: web::Path<String>, data: web::Data<AppState>) -> impl Responder {
-    let issuer_id = &*path;
-    let key_states = data.key_states.lock().unwrap();
-    match key_states.get(issuer_id) {
+    let issuer_id = match IdentifierPrefix::from_str(&*path) {
+        Ok(id) => id,
+        Err(err) => {
+            return HttpResponse::BadRequest().body(format!("Invalid issuer ID: {:?}", err))
+        }
+    };
+    let event_proc = data.event_processor.lock().unwrap();
+    match event_proc.get_state(&issuer_id).unwrap() {
         Some(key_state) => return HttpResponse::Ok().json(key_state),
         None => {
             if let Some(addr) = data
                 .dht_node
                 .lock()
                 .unwrap()
-                .get(&get_dht_key(issuer_id.as_bytes()))
+                .get(&get_dht_key(issuer_id.to_str().as_bytes()))
             {
-                let url = format!("http://{}/key_states/{}", addr, issuer_id);
+                let url = format!("http://{}/key_states/{}", addr, issuer_id.to_str());
                 log::info!("Found key state for {:?} at {:?}", issuer_id, url);
                 if let Ok(resp) = reqwest::get(url).await {
                     let body = resp.text().await.unwrap();
@@ -79,15 +87,56 @@ async fn key_state_get(path: web::Path<String>, data: web::Data<AppState>) -> im
     return HttpResponse::NotFound().body(format!("Key state for {:?} not found", issuer_id));
 }
 
-#[actix_web::put("/key_states/{issuer_id}")]
-async fn key_state_put(
+#[actix_web::get("/key_logs/{issuer_id}")]
+async fn key_log_get(path: web::Path<String>, data: web::Data<AppState>) -> impl Responder {
+    let issuer_id = match IdentifierPrefix::from_str(&*path) {
+        Ok(id) => id,
+        Err(err) => {
+            return HttpResponse::BadRequest().body(format!("Invalid issuer ID: {:?}", err))
+        }
+    };
+    let event_proc = data.event_processor.lock().unwrap();
+    match event_proc.get_kel(&issuer_id).unwrap() {
+        Some(key_log) => {
+            return HttpResponse::Ok()
+                .insert_header(header::ContentType(mime::APPLICATION_OCTET_STREAM))
+                .body(key_log)
+        }
+        None => {
+            if let Some(addr) = data
+                .dht_node
+                .lock()
+                .unwrap()
+                .get(&get_dht_key(issuer_id.to_str().as_bytes()))
+            {
+                let url = format!("http://{}/key_logs/{}", addr, issuer_id.to_str());
+                log::info!("Found key log for {:?} at {:?}", issuer_id, url);
+                if let Ok(resp) = reqwest::get(url).await {
+                    let body = resp.bytes().await.unwrap();
+                    return HttpResponse::Ok()
+                        .insert_header(header::ContentType(mime::APPLICATION_OCTET_STREAM))
+                        .body(body);
+                }
+            };
+        }
+    }
+    return HttpResponse::NotFound().body(format!("Key state for {:?} not found", issuer_id));
+}
+
+#[actix_web::post("/messages/{issuer_id}")]
+async fn message_put(
     path: web::Path<String>,
     body: web::Bytes,
     data: web::Data<AppState>,
 ) -> impl Responder {
-    let issuer_id = &*path;
-    let key_state = match signed_message(&body) {
-        Ok((_, key_state)) => key_state,
+    let issuer_id = match IdentifierPrefix::from_str(&*path) {
+        Ok(id) => id,
+        Err(err) => {
+            return HttpResponse::BadRequest().body(format!("Invalid issuer ID: {:?}", err))
+        }
+    };
+    let events = match signed_event_stream(&body) {
+        Ok((_, events)) => events,
         Err(err) => {
             return HttpResponse::BadRequest().body(format!(
                 "Invalid key state event: {:?}",
@@ -95,39 +144,40 @@ async fn key_state_put(
             ))
         }
     };
-    let key_state = match Message::try_from(key_state) {
-        Ok(key_state) => key_state,
-        Err(err) => {
-            return HttpResponse::BadRequest().body(format!("Invalid key state message: {:?}", err))
-        }
-    };
-    let key_state = match data.event_processor.lock().unwrap().process(key_state) {
-        Ok(Some(key_state)) => key_state,
-        Ok(None) => return HttpResponse::BadRequest().body("Empty key state"),
-        Err(err) => {
-            return HttpResponse::BadRequest().body(format!("Can't verify key state: {:?}", err))
-        }
-    };
-    let resp = {
-        let mut key_states = data.key_states.lock().unwrap();
-        log::info!(
-            "Saving {data:?} for issuer {id:?}",
-            id = issuer_id,
-            data = key_state
-        );
-        match key_states.insert(issuer_id.clone(), key_state.clone()) {
-            Some(_) => HttpResponse::Ok().json(key_state),
-            None => HttpResponse::Created().json(key_state),
-        }
-    };
+    
+    let processor = EventProcessor::new(data.event_processor.lock().unwrap().db.clone());
+    for event in events {
+        let msg = match Message::try_from(event) {
+            Ok(msg) => msg,
+            Err(err) => {
+                return HttpResponse::BadRequest()
+                .body(format!("Invalid key state message: {:?}", err))
+            }
+        };
+        match processor.process(msg) {
+            Ok(success) => {
+                log::info!(
+                    "Saving event {data:?} for issuer {id:?}",
+                    id = issuer_id,
+                    data = success
+                );
+            }
+            Err(err) => {
+                return HttpResponse::BadRequest()
+                .body(format!("Error while processing incoming event: {:?}", err))
+            }
+        };
+    }
+    
     {
         let mut node = data.dht_node.lock().unwrap();
         node.insert(
-            get_dht_key(issuer_id.as_bytes()),
+            get_dht_key(issuer_id.to_str().as_bytes()),
             &data.api_public_addr.to_string(),
         );
     };
-    resp
+
+    HttpResponse::Ok().json(json!({}))
 }
 
 #[actix_web::get("/witness_ips/{witness_id}")]
@@ -232,13 +282,12 @@ async fn main() -> std::io::Result<()> {
     );
 
     let db = Arc::new(SledEventDatabase::new(db_path.as_path()).unwrap());
-    let event_processor = Mutex::new(EventProcessor::new(Arc::clone(&db)));
+    let event_processor = Mutex::new(EventStorage::new(Arc::clone(&db)));
 
     let state = web::Data::new(AppState {
         dht_node: Mutex::new(dht_node),
         api_public_addr,
         event_processor,
-        key_states: Mutex::new(HashMap::new()),
         witness_ips: Mutex::new(HashMap::new()),
     });
 
@@ -249,7 +298,8 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(state.clone())
             .service(key_state_get)
-            .service(key_state_put)
+            .service(key_log_get)
+            .service(message_put)
             .service(witness_ip_get)
             .service(witness_ip_put)
     })

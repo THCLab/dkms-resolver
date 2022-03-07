@@ -1381,9 +1381,8 @@ checksum = "67c21572b4949434e4fc1e1978b99c5f77064153c59d998bf13ecd96fb5ecba7"
 
 [[package]]
 name = "keri"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1503578ec7e47feab28a4f69d52bcbdf0d0f36bb27adcbc17974bbe3bd879257"
+version = "0.8.0"
+source = "git+ssh://github.com/THCLab/keriox.git#9031604cb2520c8d759746288d26f46e62940d12"
 dependencies = [
  "arrayref",
  "base64",
@@ -1422,6 +1421,7 @@ dependencies = [
  "kademlia-dht",
  "keri",
  "log",
+ "mime",
  "public-ip",
  "rand 0.8.4",
  "reqwest",
