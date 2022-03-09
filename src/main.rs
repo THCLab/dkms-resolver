@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use actix_web::{http::header, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{http::header, web, App, HttpResponse, HttpServer, Responder, middleware::Logger};
 use kademlia_dht::{Key, Node, NodeData};
 use keri::{
     database::sled::SledEventDatabase,
@@ -297,6 +297,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
+            .wrap(Logger::default())
             .service(key_state_get)
             .service(key_log_get)
             .service(message_put)
